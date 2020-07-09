@@ -189,10 +189,10 @@ int rc_kalman_reset(rc_kalman_t* kf);
 
 
 /**
- * @brief      Kalman Filter state prediction step based on physical model.
+ * @brief      Kalman Filter state prediction and correction steps based on physical model.
  *
  * Uses the state estimate and control input from the previous timestep to
- * produce an estimate of the state at the current timestep. This step pdates P
+ * produce an estimate of the state at the current timestep. This step updates P
  * and the estimated state x. Assume that you have calculated f(x[k|k],u[k]) and
  * F(x[k|k],u[k]) before calling this function.
  *
@@ -202,9 +202,9 @@ int rc_kalman_reset(rc_kalman_t* kf);
  * - Kalman measurement Update:
  *   - h[k] = H * x_pre[k]
  *   - S = H*P*H^T + R
- *   - L = P*(H^T)*(S^-1)
- *   - x_est[k|k] = x[k|k-1] + L*(y[k]-h[k])
- *   - P[k|k] = (I - L*H)*P[k|k-1]
+ *   - K = P*(H^T)*(S^-1)
+ *   - x_est[k|k] = x[k|k-1] + K*(y[k]-h[k])
+ *   - P[k|k] = (I - K*H)*P[k|k-1]
  *
  * @param      kf    pointer to struct to be updated
  * @param      u     control input
@@ -213,6 +213,54 @@ int rc_kalman_reset(rc_kalman_t* kf);
  * @return     0 on success, -1 on failure
  */
 int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y);
+
+
+/**
+ * @brief      Kalman Filter state prediction step based on physical model.
+ *
+ * Uses the state estimate and control input from the previous timestep to
+ * produce an estimate of the state at the current timestep. This step updates P
+ * and the estimated state x. Assume that you have calculated f(x[k|k],u[k]) and
+ * F(x[k|k],u[k]) before calling this function.
+ * 
+ * This function only performs the prediction step as follows. 
+ * Use 'kalman_correct_lin' for the measurement update (correction) step
+ *
+ * - Kalman linear state prediction
+ *   - x_pre[k|k-1] = F*x[k-1|k-1] +  G*u[k-1]
+ *   - P[k|k-1] = F*P[k-1|k-1]*F^T + Q
+ *
+ * @param      kf    pointer to struct to be updated
+ * @param      u     control input
+ *
+ * @return     0 on success, -1 on failure
+ */
+int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u);
+
+
+/**
+ * @brief      Kalman Filter state correction step based on measurement.
+ *
+ * Uses the state estimate and sensor measurement 'y' to correct the state estimate 
+ * at the current timestep. 
+ * This step updates P and the estimated state x. 
+ * 
+ * This function only performs the prediction step as follows. 
+ * Use 'kalman_correct_lin' for the measurement update (correction) step
+ *
+ * - Kalman measurement Update:
+ *   - h[k] = H * x_pre[k]
+ *   - S = H*P*H^T + R
+ *   - K = P*(H^T)*(S^-1)
+ *   - x_est[k|k] = x[k|k-1] + K*(y[k]-h[k])
+ *   - P[k|k] = (I - K*H)*P[k|k-1]
+ *
+ * @param      kf    pointer to struct to be updated
+ * @param[in]  y     sensor measurement
+ *
+ * @return     0 on success, -1 on failure
+ */
+int kalman_correct_lin(rc_kalman_t* kf, rc_vector_t y);
 
 
 /**

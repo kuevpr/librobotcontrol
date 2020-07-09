@@ -158,7 +158,7 @@ int rc_kalman_reset(rc_kalman_t* kf)
 
 int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 {
-	rc_matrix_t L = RC_MATRIX_INITIALIZER;
+	rc_matrix_t K = RC_MATRIX_INITIALIZER;
 	rc_matrix_t newP = RC_MATRIX_INITIALIZER;
 	rc_matrix_t S = RC_MATRIX_INITIALIZER;
 	rc_matrix_t FT = RC_MATRIX_INITIALIZER;
@@ -210,30 +210,30 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 	// S = H*P*H^T + R
 	// Calculate H^T, borrow S for H^T
 	rc_matrix_transpose(kf->H, &S);			// S = H^T
-	// Calculate a part of L in advance before we modify S = H^T
-	rc_matrix_multiply(newP, S, &L);		// K = P*(H^T)
+	// Calculate a part of K in advance before we modify S = H^T
+	rc_matrix_multiply(newP, S, &K);		// K = P*(H^T)
 	rc_matrix_left_multiply_inplace(newP, &S);	// S = P*H^T
 	rc_matrix_left_multiply_inplace(kf->H, &S);	// S = H*(P*H^T)
 	rc_matrix_add_inplace(&S, kf->R);		// S = H*P*H^T + R
 
-	// L = P*(H^T)*(S^-1)
+	// K = P*(H^T)*(S^-1)
 	rc_algebra_invert_matrix_inplace(&S);		// S2^(-1) = S^(-1)
-	rc_matrix_right_multiply_inplace(&L, S);	// L = (P*H^T)*(S^-1)
+	rc_matrix_right_multiply_inplace(&K, S);	// K = (P*H^T)*(S^-1)
 
 	// x[k|k] = x[k|k-1] + K[k]*(y[k]-h[k])
 	rc_vector_subtract(y,h,&z);			// z = k-h
-	rc_matrix_times_col_vec(L, z, &tmp1);		// temp = L*z
+	rc_matrix_times_col_vec(K, z, &tmp1);		// temp = K*z
 	rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + K*y
 
-	// P[k|k] = (I - L*H)*P = P[k|k-1] - L*H*P[k|k-1], reuse the matrix S.
+	// P[k|k] = (I - K*H)*P = P[k|k-1] - K*H*P[k|k-1], reuse the matrix S.
 	rc_matrix_multiply(kf->H, newP, &S);		// S = H*P
-	rc_matrix_left_multiply_inplace(L, &S);		// S = L*(H*P)
+	rc_matrix_left_multiply_inplace(K, &S);		// S = K*(H*P)
 	rc_matrix_subtract_inplace(&newP, S);		// P = P - K*H*P
 	rc_matrix_symmetrize(&newP);			// Force symmetric P
 	rc_matrix_duplicate(newP,&kf->P);
 
 	// cleanup
-	rc_matrix_free(&L);
+	rc_matrix_free(&K);
 	rc_matrix_free(&newP);
 	rc_matrix_free(&S);
 	rc_matrix_free(&FT);
@@ -246,10 +246,141 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 	return 0;
 }
 
+int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u)
+{
+    rc_matrix_t newP = RC_MATRIX_INITIALIZER;
+	rc_matrix_t FT = RC_MATRIX_INITIALIZER;
+	rc_vector_t tmp1 = RC_VECTOR_INITIALIZER;
+	rc_vector_t tmp2 = RC_VECTOR_INITIALIZER;
+
+	// sanity checks
+	if(kf==NULL){
+		fprintf(stderr, "ERROR in kalman_predict_lin, received NULL pointer\n");
+		return -1;
+	}
+	if(kf->initialized !=1){
+		fprintf(stderr, "ERROR in kalman_predict_lin, kf uninitialized\n");
+		return -1;
+	}
+	if(u.initialized!=1){
+		fprintf(stderr, "ERROR in kalman_predict_lin received uninitialized vector\n");
+		return -1;
+	}
+	if(u.len != kf->G.cols){
+		fprintf(stderr, "ERROR in kalman_predict_lin u must have same dimension as columns of G\n");
+		return -1;
+	}
+
+	// for linear case only, calculate x_pre from linear system model
+	// x_pre = x[k|k-1] = F*x[k-1|k-1] +  G*u[k-1]
+	rc_matrix_times_col_vec(kf->F, kf->x_est, &tmp1);
+	rc_matrix_times_col_vec(kf->G, u, &tmp2);
+	rc_vector_sum(tmp1, tmp2, &kf->x_pre);
+    rc_vector_duplicate(kf->x_pre, &kf->x_est); //With no correction step, x_est is same as x_pre
+
+	// F is constant in this linear case
+	// P[k|k-1] = F*P[k-1|k-1]*F^T + Q
+	rc_matrix_multiply(kf->F, kf->P, &newP);		// newP = F*P_old
+	rc_matrix_transpose(kf->F, &FT);
+	rc_matrix_right_multiply_inplace(&newP, FT);	// P = F*P*F^T
+	rc_matrix_add_inplace(&newP, kf->Q);			// P = F*P*F^T + Q
+	rc_matrix_symmetrize(&newP);					// Force symmetric P
+    rc_matrix_duplicate(newP,&kf->P);
+
+
+	// cleanup
+	rc_matrix_free(&newP);
+	rc_matrix_free(&FT);
+	rc_vector_free(&tmp1);
+	rc_vector_free(&tmp2);
+
+	//Step should only be incremented in prediction step. 
+	kf->step++;
+	return 0;
+}
+
+int kalman_correct_lin(rc_kalman_t* kf,  rc_vector_t y)
+{
+	rc_matrix_t K = RC_MATRIX_INITIALIZER;
+	rc_matrix_t newP = RC_MATRIX_INITIALIZER;
+	rc_matrix_t S = RC_MATRIX_INITIALIZER;
+	rc_vector_t h = RC_VECTOR_INITIALIZER;
+	rc_vector_t z = RC_VECTOR_INITIALIZER;
+	rc_vector_t tmp1 = RC_VECTOR_INITIALIZER;
+
+	int ret = 0;
+
+	// sanity checks
+	if(kf==NULL){
+		fprintf(stderr, "ERROR in kalman_correct_lin, received NULL pointer\n");
+		return -1;
+	}
+	if(kf->initialized !=1){
+		fprintf(stderr, "ERROR in kalman_correct_lin, kf uninitialized\n");
+		return -1;
+	}
+	if(y.initialized!=1){
+		fprintf(stderr, "ERROR in kalman_correct_lin received uninitialized vector\n");
+		return -1;
+	}
+	if(y.len != kf->H.rows){
+		fprintf(stderr, "ERROR in kalman_correct_lin y must have same dimension as rows of H\n");
+		return -1;
+	}
+
+    //Since prediction step is no longer being done in this function
+    rc_matrix_duplicate(kf->P, &newP);
+
+	// h[k] = H * x_pre[k]
+	rc_matrix_times_col_vec(kf->H,kf->x_pre,&h);
+
+	// H is constant in the linear case
+	// S = H*P*H^T + R
+	// Calculate H^T, borrow S for H^T
+	rc_matrix_transpose(kf->H, &S);			// S = H^T
+
+	// Calculate a part of K in advance before we modify S = H^T
+	rc_matrix_multiply(newP, S, &K);			// K = P*(H^T)
+	rc_matrix_left_multiply_inplace(newP, &S);	// S = P*H^T
+	rc_matrix_left_multiply_inplace(kf->H, &S);	// S = H*(P*H^T)
+	rc_matrix_add_inplace(&S, kf->R);			// S = H*P*H^T + R
+
+	// K = P*(H^T)*(S^-1)
+	if(rc_algebra_invert_matrix_inplace(&S)){ // S2^(-1) = S^(-1)
+		fprintf(stderr, "ERROR in kalman_correct_lin: Cannot invert S. Update step not applied\n");
+		ret = -1;
+	}
+	else{
+		rc_matrix_right_multiply_inplace(&K, S);	// K = (P*H^T)*(S^-1)
+
+		// x[k|k] = x[k|k-1] + K[k]*(y[k]-h[k])
+		rc_vector_subtract(y,h,&z);			// z = y-h
+		rc_matrix_times_col_vec(K, z, &tmp1);		// temp = K*z
+		rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + K*z
+
+		// P[k|k] = (I - K*H)*P = P[k|k-1] - K*H*P[k|k-1], reuse the matrix S.
+		rc_matrix_multiply(kf->H, newP, &S);		// S = H*P
+		rc_matrix_left_multiply_inplace(K, &S);		// S = K*(H*P)
+		rc_matrix_subtract_inplace(&newP, S);		// P = P - K*H*P
+		rc_matrix_symmetrize(&newP);			// Force symmetric P
+		rc_matrix_duplicate(newP,&kf->P);
+	}		
+	
+	// cleanup
+	rc_matrix_free(&K);
+	rc_matrix_free(&newP);
+	rc_matrix_free(&S);
+	rc_vector_free(&h);
+	rc_vector_free(&z);
+	rc_vector_free(&tmp1);
+
+	return ret;
+}
+
 
 int rc_kalman_update_ekf(rc_kalman_t* kf, rc_matrix_t F, rc_matrix_t H, rc_vector_t x_pre, rc_vector_t y, rc_vector_t h)
 {
-	rc_matrix_t L = RC_MATRIX_INITIALIZER;
+	rc_matrix_t K = RC_MATRIX_INITIALIZER;
 	rc_matrix_t newP = RC_MATRIX_INITIALIZER;
 	rc_matrix_t S = RC_MATRIX_INITIALIZER;
 	rc_matrix_t FT = RC_MATRIX_INITIALIZER;
@@ -312,30 +443,30 @@ int rc_kalman_update_ekf(rc_kalman_t* kf, rc_matrix_t F, rc_matrix_t H, rc_vecto
 	// S = H*P*H^T + R
 	// Calculate H^T, borrow S for H^T
 	rc_matrix_transpose(kf->H, &S);			// S = H^T
-	// Calculate a part of L in advance before we modify S = H^T
-	rc_matrix_multiply(kf->P, S, &L);		// K = P*(H^T)
+	// Calculate a part of K in advance before we modify S = H^T
+	rc_matrix_multiply(kf->P, S, &K);		// K = P*(H^T)
 	rc_matrix_left_multiply_inplace(kf->P, &S);	// S = P*H^T
 	rc_matrix_left_multiply_inplace(kf->H, &S);	// S = H*(P*H^T)
 	rc_matrix_add_inplace(&S, kf->R);		// S = H*P*H^T + R
 
-	// L = P*(H^T)*(S^-1)
+	// K = P*(H^T)*(S^-1)
 	rc_algebra_invert_matrix_inplace(&S);		// S2^(-1) = S^(-1)
-	rc_matrix_right_multiply_inplace(&L, S);	// L = (P*H^T)*(S^-1)
+	rc_matrix_right_multiply_inplace(&K, S);	// K = (P*H^T)*(S^-1)
 
-	// x[k|k] = x[k|k-1] + L[k]*(y[k]-h[k])
+	// x[k|k] = x[k|k-1] + K[k]*(y[k]-h[k])
 	rc_vector_subtract(y,h,&z);			// z = k-h
-	rc_matrix_times_col_vec(L, z, &tmp1);		// temp = L*z
-	rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + L*y
+	rc_matrix_times_col_vec(K, z, &tmp1);		// temp = K*z
+	rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + K*y
 
-	// P[k|k] = (I - L*H)*P = P - L*H*P, reuse the matrix S.
+	// P[k|k] = (I - K*H)*P = P - K*H*P, reuse the matrix S.
 	rc_matrix_multiply(kf->H, newP, &S);		// S = H*P
-	rc_matrix_left_multiply_inplace(L, &S);		// S = L*(H*P)
+	rc_matrix_left_multiply_inplace(K, &S);		// S = K*(H*P)
 	rc_matrix_subtract_inplace(&newP, S);		// P = P - K*H*P
 	rc_matrix_symmetrize(&newP);			// Force symmetric P
 	rc_matrix_duplicate(newP,&kf->P);
 
 	// cleanup
-	rc_matrix_free(&L);
+	rc_matrix_free(&K);
 	rc_matrix_free(&newP);
 	rc_matrix_free(&S);
 	rc_matrix_free(&FT);
