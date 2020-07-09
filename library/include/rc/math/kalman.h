@@ -224,7 +224,7 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y);
  * F(x[k|k],u[k]) before calling this function.
  * 
  * This function only performs the prediction step as follows. 
- * Use 'kalman_correct_lin' for the measurement update (correction) step
+ * Use 'rc_kalman_correct_lin' for the measurement update (correction) step
  *
  * - Kalman linear state prediction
  *   - x_pre[k|k-1] = F*x[k-1|k-1] +  G*u[k-1]
@@ -235,7 +235,7 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y);
  *
  * @return     0 on success, -1 on failure
  */
-int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u);
+int rc_kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u);
 
 
 /**
@@ -245,8 +245,8 @@ int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u);
  * at the current timestep. 
  * This step updates P and the estimated state x. 
  * 
- * This function only performs the prediction step as follows. 
- * Use 'kalman_correct_lin' for the measurement update (correction) step
+ * This function only performs the correction step as follows. 
+ * Use 'rc_kalman_predict_lin' for the prediction step
  *
  * - Kalman measurement Update:
  *   - h[k] = H * x_pre[k]
@@ -260,7 +260,7 @@ int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u);
  *
  * @return     0 on success, -1 on failure
  */
-int kalman_correct_lin(rc_kalman_t* kf, rc_vector_t y);
+int rc_kalman_correct_lin(rc_kalman_t* kf, rc_vector_t y);
 
 
 /**

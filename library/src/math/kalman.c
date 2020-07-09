@@ -167,6 +167,8 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 	rc_vector_t tmp1 = RC_VECTOR_INITIALIZER;
 	rc_vector_t tmp2 = RC_VECTOR_INITIALIZER;
 
+	int ret = 0;
+
 	// sanity checks
 	if(unlikely(kf==NULL)){
 		fprintf(stderr, "ERROR in rc_kalman_lin_update, received NULL pointer\n");
@@ -217,20 +219,26 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 	rc_matrix_add_inplace(&S, kf->R);		// S = H*P*H^T + R
 
 	// K = P*(H^T)*(S^-1)
-	rc_algebra_invert_matrix_inplace(&S);		// S2^(-1) = S^(-1)
-	rc_matrix_right_multiply_inplace(&K, S);	// K = (P*H^T)*(S^-1)
+	if(rc_algebra_invert_matrix_inplace(&S)){ // S2^(-1) = S^(-1)
+		fprintf(stderr, "ERROR in rc_kalman_update_lin: Cannot invert S. Update step not applied\n");
+		ret = -1;
+	}
+	else
+	{
+		rc_matrix_right_multiply_inplace(&K, S);	// K = (P*H^T)*(S^-1)
 
-	// x[k|k] = x[k|k-1] + K[k]*(y[k]-h[k])
-	rc_vector_subtract(y,h,&z);			// z = k-h
-	rc_matrix_times_col_vec(K, z, &tmp1);		// temp = K*z
-	rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + K*y
+		// x[k|k] = x[k|k-1] + K[k]*(y[k]-h[k])
+		rc_vector_subtract(y,h,&z);			// z = k-h
+		rc_matrix_times_col_vec(K, z, &tmp1);		// temp = K*z
+		rc_vector_sum(kf->x_pre, tmp1, &kf->x_est);	// x_est = x + K*y
 
-	// P[k|k] = (I - K*H)*P = P[k|k-1] - K*H*P[k|k-1], reuse the matrix S.
-	rc_matrix_multiply(kf->H, newP, &S);		// S = H*P
-	rc_matrix_left_multiply_inplace(K, &S);		// S = K*(H*P)
-	rc_matrix_subtract_inplace(&newP, S);		// P = P - K*H*P
-	rc_matrix_symmetrize(&newP);			// Force symmetric P
-	rc_matrix_duplicate(newP,&kf->P);
+		// P[k|k] = (I - K*H)*P = P[k|k-1] - K*H*P[k|k-1], reuse the matrix S.
+		rc_matrix_multiply(kf->H, newP, &S);		// S = H*P
+		rc_matrix_left_multiply_inplace(K, &S);		// S = K*(H*P)
+		rc_matrix_subtract_inplace(&newP, S);		// P = P - K*H*P
+		rc_matrix_symmetrize(&newP);			// Force symmetric P
+		rc_matrix_duplicate(newP,&kf->P);
+	}
 
 	// cleanup
 	rc_matrix_free(&K);
@@ -243,10 +251,10 @@ int rc_kalman_update_lin(rc_kalman_t* kf, rc_vector_t u, rc_vector_t y)
 	rc_vector_free(&tmp2);
 
 	kf->step++;
-	return 0;
+	return ret;
 }
 
-int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u)
+int rc_kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u)
 {
     rc_matrix_t newP = RC_MATRIX_INITIALIZER;
 	rc_matrix_t FT = RC_MATRIX_INITIALIZER;
@@ -299,7 +307,7 @@ int kalman_predict_lin(rc_kalman_t* kf, rc_vector_t u)
 	return 0;
 }
 
-int kalman_correct_lin(rc_kalman_t* kf,  rc_vector_t y)
+int rc_kalman_correct_lin(rc_kalman_t* kf,  rc_vector_t y)
 {
 	rc_matrix_t K = RC_MATRIX_INITIALIZER;
 	rc_matrix_t newP = RC_MATRIX_INITIALIZER;
